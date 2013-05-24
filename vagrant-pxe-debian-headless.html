@@ -1,0 +1,234 @@
+<h1>Creating a vagrant base-box</h1>
+
+<p>This document describes how to create a base box using:</p>
+
+<ul>
+<li>FreeBSD as host</li>
+<li>Headless virtualbox</li>
+<li>PXE-boot for installing the debian guest</li>
+</ul>
+
+<h4>Install VirtualBox</h4>
+
+<pre><code>portsnap fetch update
+cd /usr/ports/emulators/virtualbox-ose
+make install clean
+  disable QT4
+  disable NLS
+kldload vboxdrv
+kldload vboxnetflt
+kldload vboxnetadp
+</code></pre>
+
+<h4>Install Vagrant</h4>
+
+<p>install vagrant using gem</p>
+
+<pre><code>cd /usr/ports/devel/rubygem-gem_plugin/
+make install clean
+gem install vagrant
+</code></pre>
+
+<p>vagrant needs iconv to run</p>
+
+<pre><code>cd /usr/ports/converters/ruby-iconv/
+make install clean
+</code></pre>
+
+<h4>Setting up the PXE-boot</h4>
+
+<p>Virtualbox has a builtin TFTP which is served from ~/.VirtualBox/TFTP so it's dead easy to boot pxe.</p>
+
+<pre><code>fetch http://ftp.nl.debian.org/debian/dists/wheezy/main/installer-i386/current/images/netboot/netboot.tar.gz
+mkdir -p ~/.VirtualBox/TFTP/debian-wheezy-i386
+tar -C ~/.VirtualBox/TFTP/debian-wheezy-i386 xvzf netboot.tar.gz
+rm netboot.tar.gz
+</code></pre>
+
+<h4>Creating the virtual machine</h4>
+
+<p>Create a virtual machine with 128Mb RAM and a 4G disk.</p>
+
+<pre><code>VBoxManage createvm --name wheezy-i386 --register
+
+VBoxManage modifyvm wheezy-i386 --memory 128    \
+                          --acpi on              \
+                          --boot1 disk           \
+                          --boot2 dvd            \
+                          --boot3 net
+</code></pre>
+
+<p>Create two nics. The first should use NAT and for the second I want bridged networking.</p>
+
+<pre><code>VBoxManage modifyvm wheezy-i386 --nic1 nat                    \
+                          --nicbootprio1 1              \
+                          --natnet1 10.0.2/24           \
+                          --nattftpfile1 "debian-wheezy-i386/pxelinux.0"
+
+VBoxManage modifyvm wheezy-i386 --nic2 bridged --bridgeadapter2 bge0
+</code></pre>
+
+<p>Create a disk and attach it</p>
+
+<pre><code>VBoxManage storagectl wheezy-i386 --name "IDE Controller" --add ide
+
+VBoxManage createhd --filename wheezy-i386.vdi --size 4096
+
+VBoxManage storageattach wheezy-i386 --storagectl "IDE Controller" \
+                               --port 0                      \
+                               --device 0                    \
+                               --type hdd                    \
+                               --medium wheezy-i386.vdi
+</code></pre>
+
+<p>Start the box.</p>
+
+<pre><code>VBoxHeadless -s wheezy_i386
+</code></pre>
+
+<p>I then used the builtin VNC server for connecting to the guest and performing the install. (From Finder in OSX &#8984;-K and connect to vnc://<host>:3390/).</p>
+
+<h4>Installing debian wheezy</h4>
+
+<pre><code>Language - Default (English)
+Country - Sweden
+Locale - Default (en_US.UTF-8)
+Keymap - Default (American English)
+Primary network interface - eth0
+Hostname - wheezy86
+Domain name - fors.local
+Mirror - Sweden, ftp.se.debian.org
+Proxy - none
+Root password - vagrant
+New user - vagrant:vagrant
+Partitioning method - Guided, entire disk, SCSI1 (0,0,0) (sda), All files in one partition
+Install GRUB boot loader to master boot record
+Tasksel - only standard system utilities
+Reboot
+</code></pre>
+
+<h4>Set up guest</h4>
+
+<p>make sure you never ever have to use nano.</p>
+
+<pre><code>update-alternatives --config editor
+</code></pre>
+
+<p>install packages</p>
+
+<pre><code>apt-get install openssh-server sudo zerofree
+</code></pre>
+
+<p>If you want to enable the bridged nic so you can ssh to the box, edit /etc/network/interfaces. The eth1 configuration needs to be removed afterwards or vagrant will choke when trying to add a second nic.</p>
+
+<pre><code>#allow-hotplug eth0
+auto eth0
+iface eth0 inet dhcp
+
+auto eth1
+iface eth1 inet dhcp
+</code></pre>
+
+<p>Restart networking.</p>
+
+<pre><code>/etc/init.d/networking restart
+</code></pre>
+
+<p>Add the vagrant user to sudoers.</p>
+
+<pre><code>visudo
+    vagrant    ALL = NOPASSWD: ALL
+</code></pre>
+
+<p>install vagrant public key</p>
+
+<pre><code>mkdir ~vagrant/.ssh
+wget https://raw.github.com/mitchellh/vagrant/master/keys/vagrant.pub -O ~vagrant/.ssh/authorized_keys
+chmod 700 ~vagrant/.ssh
+chown -R vagrant:vagrant ~vagrant/.ssh
+</code></pre>
+
+<p>Reduce the size of the guest. First remove some files.</p>
+
+<pre><code>rm -rf /usr/share/doc
+rm -rf /usr/src/virtualbox*
+find /var/cache -type f -exec rm -rf {} \;  
+rm -rf /usr/share/locale/{af,am,ar,as,ast,az,bal,be,bg,bn,bn_IN,br,bs,byn,ca,cr,cs,csb,cy,da,de,de_AT,dz,el,en_AU,en_CA,eo,es,et,et_EE,eu,fa,fi,fo,fr,fur,ga,gez,gl,gu,haw,he,hi,hr,hu,hy,id,is,it,ja,ka,kk,km,kn,ko,kok,ku,ky,lg,lt,lv,mg,mi,mk,ml,mn,mr,ms,mt,nb,ne,nl,nn,no,nso,oc,or,pa,pl,ps,pt,pt_BR,qu,ro,ru,rw,si,sk,sl,so,sq,sr,sr*latin,sv,sw,ta,te,th,ti,tig,tk,tl,tr,tt,ur,urd,ve,vi,wa,wal,wo,xh,zh,zh_HK,zh_CN,zh_TW,zu}
+</code></pre>
+
+<p>Then run zerofree on the disk.</p>
+
+<pre><code>init 1 # enter root password to login
+mount -o remount,ro /dev/sda1
+zerofree /dev/sda1
+</code></pre>
+
+<h4>Create vagrant package</h4>
+
+<p>Create a vagrant box.</p>
+
+<pre><code>vagrant package --base wheezy_i386
+mv package.box wheezy_i386.box
+</code></pre>
+
+<p>Add the box.</p>
+
+<pre><code>vagrant box add wheezy_i386 wheezy_i386.box
+</code></pre>
+
+<h4>Create an environment to test the box in</h4>
+
+<p>Create a Vagrantfile with the following content:</p>
+
+<pre><code>Vagrant::Config.run do |config|
+    config.vm.box = "wheezy_i386"
+    config.vm.network :bridged, :bridge =&gt; "bge0"
+end
+</code></pre>
+
+<p>If you need to lookup the name of the bridge, use</p>
+
+<pre><code>VBoxManage list bridgedifs | grep ^Name
+</code></pre>
+
+<h4>Test that it works</h4>
+
+<pre><code>vagrant up
+vagrant ssh
+vagrant halt
+</code></pre>
+
+<h4>VRDE</h4>
+
+<p>I like the virtualbox VRDE. To enable it for the vagrant box run the following command.</p>
+
+<pre><code># find the new vm
+VBoxManage list vms
+# turn on vrde
+VBoxManage modifyvm debian_box_i386_1369339125 --vrde on
+</code></pre>
+
+<h4>Change the vagrant default ssh key</h4>
+
+<p>First generate a new key-pair on the host and save it as vagrant<em>key.
+    ssh-keygen # save key as vagrant</em>key</p>
+
+<p>Ssh to guest and install it</p>
+
+<pre><code>cp /vagrant/vagrant_key.pub ~vagrant/.ssh/authorized_keys
+</code></pre>
+
+<p>Back to the host and edit Vagrantfile.</p>
+
+<pre><code>config.ssh.private_key_path = "vagrant_key"
+</code></pre>
+
+<h4>Credits</h4>
+
+<p>These are some of the pages I gathered information/snippets from.</p>
+
+<ul>
+<li>http://wiki.sysconfig.org.uk/display/howto/VirtualBox+On+FreeBSD</li>
+<li>http://www.howtoforge.com/vboxheadless-running-virtual-machines-with-virtualbox-3.1.x-on-a-headless-debian-lenny-server</li>
+<li>http://hempeldesigngroup.com/embedded/stories/headless-debian-virtualbox-setup/</li>
+</ul>
